@@ -99,6 +99,10 @@ export interface Repo {
    *  fires 50 identical shallow clones; assembling the same ~180 KiB reply
    *  50 times is pure waste). */
   fetchCache: Map<string, Buffer>;
+  /** Cache: ls-refs responses by ref-version + options. The clone workload
+   *  fires 50 identical ls-refs (peel + symrefs); rebuild that small reply
+   *  once and hand out the same bytes. */
+  lsRefsCache: Map<string, Buffer>;
   /** Cache: advertisement lines by ref-version. */
   advCache: string | null;
   advVersion: number;
@@ -143,6 +147,7 @@ export class Store {
       objects: new Map(),
       packCache: new Map(),
       fetchCache: new Map(),
+      lsRefsCache: new Map(),
       advCache: null,
       advVersion: 0,
     };
@@ -169,6 +174,7 @@ export class Store {
     repo.advCache = null;
     repo.packCache.clear();
     repo.fetchCache.clear();
+    repo.lsRefsCache.clear();
   }
 }
 

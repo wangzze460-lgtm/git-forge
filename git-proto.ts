@@ -42,15 +42,21 @@ function peelToCommit(repo: Repo, oid: string): string {
 // Advertisements (GET /info/refs)
 // ---------------------------------------------------------------------------
 
+/** The v2 upload-pack advertisement is repo-independent (capabilities only,
+ *  no refs), so build the bytes once and hand out the same buffer to every
+ *  clone instead of rebuilding five pkt-lines per request. */
+const UPLOAD_V2_ADV: Buffer = Buffer.concat([
+  pktLine('version 2\n'),
+  pktLine(`${AGENT}\n`),
+  pktLine('ls-refs=unborn\n'),
+  pktLine('fetch=shallow filter\n'),
+  pktLine('object-format=sha1\n'),
+  FLUSH,
+]);
+
 export function advertiseUploadV2(repo: Repo): Buffer {
-  const lines = [
-    'version 2\n',
-    `${AGENT}\n`,
-    'ls-refs=unborn\n',
-    'fetch=shallow filter\n',
-    'object-format=sha1\n',
-  ];
-  return Buffer.concat([...lines.map((l) => pktLine(l)), FLUSH]);
+  void repo;
+  return UPLOAD_V2_ADV;
 }
 
 function advertiseV0(repo: Repo, service: 'git-upload-pack' | 'git-receive-pack', caps: string): Buffer {
@@ -116,6 +122,11 @@ export function handleLsRefs(repo: Repo, body: Buffer): Buffer {
     else if (line.startsWith('ref-prefix ')) opts.prefixes.push(line.slice('ref-prefix '.length));
     // command=ls-refs, agent=..., object-format=... are ignored.
   }
+  // Identical ls-refs (the clone workload's 50 concurrent clones all ask for
+  // peel + symrefs) share one cached reply, keyed by ref-version + options.
+  const lsKey = `${repo.advVersion}|${opts.peel ? 'p' : ''}${opts.symrefs ? 's' : ''}${opts.unborn ? 'u' : ''}|${opts.prefixes.join(',')}`;
+  const cachedLs = repo.lsRefsCache.get(lsKey);
+  if (cachedLs !== undefined) return cachedLs;
   const out: Buffer[] = [];
   const head = headOid(repo);
   const matches = (name: string): boolean =>
@@ -143,7 +154,9 @@ export function handleLsRefs(repo: Repo, body: Buffer): Buffer {
     out.push(pktLine(line + '\n'));
   }
   out.push(FLUSH);
-  return Buffer.concat(out);
+  const lsOut = Buffer.concat(out);
+  repo.lsRefsCache.set(lsKey, lsOut);
+  return lsOut;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +412,7 @@ export function handleReceivePack(repo: Repo, body: Buffer): Buffer {
       // Invalidate cached packs and fetch responses (refs moved).
       repo.packCache.clear();
       repo.fetchCache.clear();
+      repo.lsRefsCache.clear();
       repo.advVersion++;
     }
   }
