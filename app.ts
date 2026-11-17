@@ -122,6 +122,14 @@ function dispatch(httpReq: HttpRequest): HttpResponse {
       return sendJson(200, { current_user_url: '/api/v3/user', rate_limit_url: '/api/v3/rate_limit' }, { 'x-oauth-scopes': 'repo, read:org' });
     }
 
+    // REST v3 is the hot path (the read/write workloads hit it thousands of
+    // times): route it before the git regex so API requests never pay for a
+    // pattern they cannot match. '/api/graphql' and '/mcp' do not start with
+    // '/api/v3/', so they still fall through below.
+    if (path.startsWith('/api/v3/')) {
+      return rest.handle(httpReq);
+    }
+
     // Git smart HTTP.
     const gitPath = gitRepoPath(path);
     if (gitPath) {
@@ -184,11 +192,6 @@ function dispatch(httpReq: HttpRequest): HttpResponse {
     // MCP.
     if (path === '/mcp') {
       return mcp.handle(httpReq);
-    }
-
-    // REST v3.
-    if (path === '/api/v3' || path.startsWith('/api/v3/')) {
-      return rest.handle(httpReq);
     }
 
     return sendJson(404, { message: 'Not Found' });

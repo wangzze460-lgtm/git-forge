@@ -34,6 +34,12 @@ export function errorResponse(status: number, message: string): HttpResponse {
   return jsonResponse(status, { message });
 }
 
+/** decodeURIComponent, but a segment without '%' is already decoded: skipping
+ *  the call saves a scan on every hot REST request (owner/repo are plain). */
+function decodeSegment(s: string): string {
+  return s.includes('%') ? decodeURIComponent(s) : s;
+}
+
 let requestCounter = 0;
 export function withRequestId(res: HttpResponse): HttpResponse {
   requestCounter += 1;
@@ -359,8 +365,8 @@ export class RestRouter {
     }
     // /repos/{owner}/{repo}[...]
     if (rest[0] === 'repos' && rest.length >= 3) {
-      const owner = decodeURIComponent(rest[1] as string);
-      const repoName = decodeURIComponent(rest[2] as string);
+      const owner = decodeSegment(rest[1] as string);
+      const repoName = decodeSegment(rest[2] as string);
       const repo = this.store.getRepo(owner, repoName);
       if (!repo) return errorResponse(404, 'Not Found');
       // A stranger owns nothing here; the viewer's repos are not theirs to read.
@@ -448,7 +454,7 @@ export class RestRouter {
       return errorResponse(404, 'Not Found');
     }
     if (head === 'contents') {
-      const path = tail.slice(1).map((s) => decodeURIComponent(s)).join('/');
+      const path = tail.slice(1).map(decodeSegment).join('/');
       if (method === 'PUT') return this.putContents(req, repo, path);
       if (method === 'GET') return this.getContents(req, repo, path);
       if (method === 'DELETE') return this.deleteContents(req, repo, path);

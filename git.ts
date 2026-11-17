@@ -233,6 +233,9 @@ export function sidebandData(data: Buffer): Buffer[] {
 
 const PACK_TYPES: Record<string, number> = { commit: 1, tree: 2, blob: 3, tag: 4 };
 
+/** Pack entry type numbers to names; module-level so readPack does not rebuild it per pack. */
+const PACK_TYPE_NAMES: Record<number, string> = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' };
+
 function encodeObjectHeader(type: number, size: number): Buffer {
   const bytes: number[] = [];
   let b = (type << 4) | (size & 0x0f);
@@ -351,7 +354,6 @@ export function readPack(pack: Buffer, resolveRefBase?: (oid: string) => GitObje
   // First pass: read all entries, deferring deltas whose base is not yet known.
   interface Pending { offset: number; type: number; baseOff?: number; baseOid?: string; data: Buffer; }
   const pending: Pending[] = [];
-  const TYPE_NAMES: Record<number, string> = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' };
   for (let i = 0; i < count; i += 1) {
     const entryStart = off;
     let b = pack[off++];
@@ -384,7 +386,7 @@ export function readPack(pack: Buffer, resolveRefBase?: (oid: string) => GitObje
       deltaCount += 1;
       pending.push({ offset: entryStart, type, baseOff, baseOid, data: inflated });
     } else {
-      const name = TYPE_NAMES[type] as GitObject['type'];
+      const name = PACK_TYPE_NAMES[type] as GitObject['type'];
       const oid = objectId(name, inflated);
       const obj: GitObject = { type: name, data: inflated, deflated: pack.subarray(streamStart, off) };
       objects.set(oid, obj);
@@ -406,7 +408,7 @@ export function readPack(pack: Buffer, resolveRefBase?: (oid: string) => GitObje
       base = objects.get(p.baseOid) ?? resolveRefBase?.(p.baseOid);
       if (!base) {
         const bp = pending.find((x) => {
-          const oid = x.type === 6 || x.type === 7 ? undefined : objectId(TYPE_NAMES[x.type] as GitObject['type'], x.data);
+          const oid = x.type === 6 || x.type === 7 ? undefined : objectId(PACK_TYPE_NAMES[x.type] as GitObject['type'], x.data);
           return oid === p.baseOid;
         });
         if (bp) base = resolveOne(bp, depth + 1);
