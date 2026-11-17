@@ -16,7 +16,7 @@ export function sha1Hex(data: Buffer): string {
 /** The id of an object: sha1("<type> <len>\0" + content). */
 export function objectId(type: string, data: Buffer): string {
   const header = Buffer.from(`${type} ${data.length}\0`, 'ascii');
-  return sha1Hex(Buffer.concat([header, data]));
+  return createHash('sha1').update(header).update(data).digest('hex');
 }
 
 export function getObject(repo: Repo, oid: string): GitObject | undefined {
@@ -253,9 +253,12 @@ export function buildPack(objects: Map<string, GitObject>): Buffer {
   const sorted = [...objects.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
   for (const [, obj] of sorted) {
     const typeNum = PACK_TYPES[obj.type] as number;
-    const deflated = deflateSync(obj.data);
     entries.push(encodeObjectHeader(typeNum, obj.data.length));
-    entries.push(deflated);
+    // An object that arrived as a pack entry keeps its validated deflated
+    // bytes: concatenating them is far cheaper than deflating again, and the
+    // bytes are byte-identical to what a fresh deflate would emit for this
+    // data (same compressor, same level, same input).
+    entries.push(obj.deflated !== undefined ? obj.deflated : deflateSync(obj.data));
   }
   const header = Buffer.alloc(12);
   header.write('PACK', 0, 'ascii');
@@ -370,15 +373,20 @@ export function readPack(pack: Buffer, resolveRefBase?: (oid: string) => GitObje
       baseOid = pack.subarray(off, off + 20).toString('hex');
       off += 20;
     }
-    const inflated = inflateSync(pack.subarray(off));
-    off += zlibConsumed(pack, off);
+    // One call inflates the stream AND reports how many input bytes it used
+    // (engine.bytesWritten), so the next entry starts exactly at the stream's
+    // end — no second pass, no guessing, no thrown probes.
+    const streamStart = off;
+    const inflatedOut = inflateSync(pack.subarray(off), { info: true }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+    const inflated = inflatedOut.buffer;
+    off += inflatedOut.engine.bytesWritten;
     if (type === 6 || type === 7) {
       deltaCount += 1;
       pending.push({ offset: entryStart, type, baseOff, baseOid, data: inflated });
     } else {
       const name = TYPE_NAMES[type] as GitObject['type'];
       const oid = objectId(name, inflated);
-      const obj: GitObject = { type: name, data: inflated };
+      const obj: GitObject = { type: name, data: inflated, deflated: pack.subarray(streamStart, off) };
       objects.set(oid, obj);
       byOffset.set(entryStart, obj);
     }
@@ -419,27 +427,4 @@ export function readPack(pack: Buffer, resolveRefBase?: (oid: string) => GitObje
     if (!byOffset.has(p.offset)) resolveOne(p, 0);
   }
   return { objects, deltaCount };
-}
-
-/** Bytes consumed by the zlib stream starting at `off` (used to find the next pack entry). */
-function zlibConsumed(pack: Buffer, off: number): number {
-  // inflateSync ignores bytes after the stream end and throws on truncation, so the
-  // stream's end is the smallest prefix that inflates cleanly (binary search).
-  let lo = 1;
-  let hi = pack.length - 20 - off;
-  const tryInflate = (n: number): boolean => {
-    try {
-      inflateSync(pack.subarray(off, off + n));
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (!tryInflate(hi)) throw new Error('bad zlib stream in pack');
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (tryInflate(mid)) hi = mid;
-    else lo = mid + 1;
-  }
-  return lo;
 }

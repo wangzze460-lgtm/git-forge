@@ -5,7 +5,7 @@
 // asking it whether the trial is over. When it says yes, we shut down cleanly.
 // Nothing else in the program talks to the harness — this file owns that handshake.
 
-import { createApp } from './app.ts';
+import { createRawApp } from './app.ts';
 
 // The harness origin, with any trailing slashes trimmed off.
 const HARNESS = (process.env.MAKEFUN_ENV_URL ?? '').replace(/\/+$/, '');
@@ -77,7 +77,7 @@ async function waitUntilDone(): Promise<void> {
 
 /** Start the server, register with the harness, wait for the trial to end. */
 async function run(): Promise<void> {
-  const server = createApp();
+  const server = createRawApp();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     // Port 0: the OS picks a free one. 8080 belongs to the harness, never bind it.

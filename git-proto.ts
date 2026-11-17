@@ -157,6 +157,14 @@ interface FetchRequest {
   deepen: number | null;
 }
 
+/** The cache key for a fetch: ref version + the exact want/have/shallow set.
+ *  Identical requests (the clone workload's 50 concurrent shallow clones)
+ *  share one cached response. */
+function fetchKey(repo: Repo, req: FetchRequest): string {
+  const depthLimit = req.deepen !== null ? req.deepen : Number.POSITIVE_INFINITY;
+  return `${repo.advVersion}|${req.wants.join(',')}|${depthLimit}|${req.haves.join(',')}|${req.shallow.join(',')}`;
+}
+
 /** Compute the pack + shallow info for a fetch. */
 function computeFetch(repo: Repo, req: FetchRequest): { pack: Buffer; shallow: string[]; unshallow: string[]; acked: string[] } {
   let depthLimit = Number.POSITIVE_INFINITY;
@@ -236,6 +244,9 @@ export function handleFetchV2(repo: Repo, body: Buffer): Buffer {
     else if (line.startsWith('deepen ')) req.deepen = parseInt(line.slice(7), 10);
     // thin-pack, no-progress, ofs-delta, filter, done: acknowledged by behaviour.
   }
+  const key = fetchKey(repo, req);
+  const cached = repo.fetchCache.get(key);
+  if (cached !== undefined) return cached;
   const { pack, shallow, unshallow, acked } = computeFetch(repo, req);
   const parts: Buffer[] = [];
   // Real git servers send the acknowledgments section ONLY when the client sent
@@ -261,7 +272,9 @@ export function handleFetchV2(repo: Repo, body: Buffer): Buffer {
   parts.push(pktLine('packfile\n'));
   for (const chunk of sidebandData(pack)) parts.push(chunk);
   parts.push(FLUSH);
-  return Buffer.concat(parts);
+  const out = Buffer.concat(parts);
+  repo.fetchCache.set(key, out);
+  return out;
 }
 
 export function handleFetchV0(repo: Repo, body: Buffer): Buffer {
@@ -278,6 +291,9 @@ export function handleFetchV0(repo: Repo, body: Buffer): Buffer {
     else if (seenFlush && line.startsWith('have ')) req.haves.push(line.slice(5).trim());
     // done: end of negotiation.
   }
+  const key = fetchKey(repo, req);
+  const cached = repo.fetchCache.get(key);
+  if (cached !== undefined) return cached;
   const { pack, acked } = computeFetch(repo, req);
   const parts: Buffer[] = [];
   if (acked.length > 0) {
@@ -287,7 +303,9 @@ export function handleFetchV0(repo: Repo, body: Buffer): Buffer {
   }
   for (const chunk of sidebandData(pack)) parts.push(chunk);
   parts.push(FLUSH);
-  return Buffer.concat(parts);
+  const out = Buffer.concat(parts);
+  repo.fetchCache.set(key, out);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,8 +396,9 @@ export function handleReceivePack(repo: Repo, body: Buffer): Buffer {
     }
     if (report.some((r) => r.ok)) repo.advCache = null;
     if (report.some((r) => r.ok)) {
-      // Invalidate cached packs (refs moved).
+      // Invalidate cached packs and fetch responses (refs moved).
       repo.packCache.clear();
+      repo.fetchCache.clear();
       repo.advVersion++;
     }
   }
@@ -388,6 +407,12 @@ export function handleReceivePack(repo: Repo, body: Buffer): Buffer {
   for (const r of report) {
     lines.push(r.ok ? `ok ${r.ref}\n` : `ng ${r.ref} ${r.reason}\n`);
   }
+  // The success report for a push to one ref is byte-identical every time
+  // ("unpack ok" + "ok refs/heads/main"), so cache the finished response
+  // bytes keyed by the report lines and reuse them.
+  const reportKey = lines.join('');
+  const cachedReport = receiveReportCache.get(reportKey);
+  if (cachedReport !== undefined) return cachedReport;
   // The report is one band-1 stream: every report line as a pkt-line, terminated by
   // a flush INSIDE the band-1 payload, then a bare flush ends the response. A real
   // git server sends exactly this; a bare flush alone leaves the reader waiting
@@ -402,7 +427,12 @@ export function handleReceivePack(repo: Repo, body: Buffer): Buffer {
     parts.push(sidebandPacket(1, reportPayload.subarray(off, Math.min(reportPayload.length, off + MAX_SIDEBAND))));
   }
   parts.push(FLUSH);
-  return Buffer.concat(parts);
+  const out = Buffer.concat(parts);
+  receiveReportCache.set(reportKey, out);
+  return out;
 }
+
+/** Cache of finished receive-pack responses by their exact report lines. */
+const receiveReportCache: Map<string, Buffer> = new Map();
 
 export { objectId };

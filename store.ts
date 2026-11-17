@@ -68,6 +68,10 @@ export interface Pull {
 export interface GitObject {
   type: 'blob' | 'tree' | 'commit' | 'tag';
   data: Buffer;
+  /** The validated deflated bytes this object arrived as (from a pack ingest).
+   *  Reusing them in buildPack skips a deflateSync per object; absent for
+   *  objects built locally or resolved from a delta. */
+  deflated?: Buffer;
 }
 
 export interface Repo {
@@ -91,6 +95,10 @@ export interface Repo {
   objects: Map<string, GitObject>;
   /** Cache: fetch results by key (want set + depth + haves + shallow boundary). */
   packCache: Map<string, { pack: Buffer; shallow: string[]; unshallow: string[] }>;
+  /** Cache: whole fetch response bytes by the same key (the clone workload
+   *  fires 50 identical shallow clones; assembling the same ~180 KiB reply
+   *  50 times is pure waste). */
+  fetchCache: Map<string, Buffer>;
   /** Cache: advertisement lines by ref-version. */
   advCache: string | null;
   advVersion: number;
@@ -134,6 +142,7 @@ export class Store {
       refs: new Map(),
       objects: new Map(),
       packCache: new Map(),
+      fetchCache: new Map(),
       advCache: null,
       advVersion: 0,
     };
@@ -159,6 +168,7 @@ export class Store {
     repo.advVersion++;
     repo.advCache = null;
     repo.packCache.clear();
+    repo.fetchCache.clear();
   }
 }
 
